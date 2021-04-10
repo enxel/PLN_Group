@@ -1,0 +1,55 @@
+normalize_text <- function(text){
+  # Keep only ASCII characters
+  text = iconv(text, "latin1", "ASCII", sub="")
+  # Convert to lower case characters
+  text = tolower(text)
+  # Remove any HTML tags
+  text = gsub("<.*?>", " ", text)
+  # Remove URLs
+  text = gsub("\\s?(f|ht)(tp)(s?)(://)([^\\.]*)[\\.|/](\\S*)", "", text)
+  # Keep letters and numbers only
+  text = gsub("[^[:alnum:]]", " ", text)
+  # Remove stop words
+  text = removeWords(text,c("rt","gt",stopwords("es")))
+  # Remove any extra white space
+  text = stripWhitespace(text)                                 
+  text = gsub("^\\s+|\\s+$", "", text)                         
+  
+  return(text)
+}
+
+limpiar <- function(texto){
+  # El orden de la limpieza no es arbitrario
+  # Se convierte todo el texto a minúsculas
+  nuevo_texto <- tolower(texto)
+  # Eliminación de páginas web (palabras que empiezan por "http." seguidas 
+  # de cualquier cosa que no sea un espacio)
+  nuevo_texto <- str_replace_all(nuevo_texto,"http\\S*", "")
+  # Eliminación de signos de puntuación
+  nuevo_texto <- str_replace_all(nuevo_texto,"[[:punct:]]", " ")
+  # Eliminación de números
+  nuevo_texto <- str_replace_all(nuevo_texto,"[[:digit:]]", " ")
+  # Eliminación de espacios en blanco múltiples
+  nuevo_texto <- str_replace_all(nuevo_texto,"[\\s]+", " ")
+  return(nuevo_texto)
+}
+
+limpiar_tokenizar <- function(texto){
+  # El orden de la limpieza no es arbitrario
+  # Se convierte todo el texto a minúsculas
+  nuevo_texto <- tolower(texto)
+  # Eliminación de páginas web (palabras que empiezan por "http." seguidas 
+  # de cualquier cosa que no sea un espacio)
+  nuevo_texto <- str_replace_all(nuevo_texto,"http\\S*", "")
+  # Eliminación de signos de puntuación
+  nuevo_texto <- str_replace_all(nuevo_texto,"[[:punct:]]", " ")
+  # Eliminación de números
+  nuevo_texto <- str_replace_all(nuevo_texto,"[[:digit:]]", " ")
+  # Eliminación de espacios en blanco múltiples
+  nuevo_texto <- str_replace_all(nuevo_texto,"[\\s]+", " ")
+  # Tokenización por palabras individuales
+  nuevo_texto <- str_split(nuevo_texto, " ")[[1]]
+  # Eliminación de tokens con una longitud < 2
+  nuevo_texto <- keep(.x = nuevo_texto, .p = function(x){str_length(x) > 1})
+  return(nuevo_texto)
+}

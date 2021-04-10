@@ -1,0 +1,406 @@
+# Import necessary libraries and functions
+library(tidyverse)
+library(tidytext)
+library(udpipe)
+library(stopwords)
+library(syuzhet)
+library(summarytools)
+
+library(mlr3)
+library(mlr3verse)
+library(mlr3pipelines)
+library(mlr3viz)
+library(mlr3tuning)
+library(ggpubr)
+library(rpart.plot)
+
+######## Parte IV: procesamiento de la informacion ########
+
+# Leer archivo RDS
+cultura_df <- readRDS("conglomerado.rds")
+
+# Determinar el tipo de tweet
+cultura_with_types_df = cultura_df %>% 
+  mutate(tweet_type = case_when(is_retweet==T~"Retweet",
+                                !is.na(reply_to_status_id)==T~"Reply",
+                                T~"Organic"))
+
+# Verificación rápida y opcional de la estructura constuida
+table(cultura_with_types_df$tweet_type)                                 ### IMAGE 01
+#cols = colnames(cultura_with_types_df,do.NULL = TRUE, prefix = "col")
+
+# Country Graph by Tweet Type                                           ### IMAGE 02
+
+cultura_with_types_df %>% 
+  count(lugar, tweet_type) %>% 
+  ggplot(aes(x=tweet_type, y=n, fill=lugar))+
+  geom_col(position="dodge")+
+  theme(legend.position = "bottom", text = element_text(18))
+
+
+#### Creacion de variables explicativas ####
+
+# Variable creation: cantidad de signos de admiración y signos de interrogación (de cierre)
+
+cultura_counted_df = cultura_with_types_df %>% 
+  mutate(n_exclamation_points = str_count(text,"\\!"),
+         n_question_marks = str_count(text,"\\?"),
+         n_hashtags = sapply(hashtags, length),
+         publication_time = format(created_at, "%H"))
+
+# Descriptiva de las variables creadas
+
+cultura_counted_df %>%                                             ### IMAGE 03
+  group_by(lugar) %>% 
+  summarize(n_exclamation_points=mean(n_exclamation_points),
+            n_question_marks=mean(n_question_marks)) %>% 
+  pivot_longer(cols = -c(lugar)) %>% 
+  ggplot(aes(x=lugar, y=value, fill=name))+
+  geom_col(position = "dodge")+
+  theme(legend.position = "bottom",
+        text=element_text(4))
+
+cultura_counted_df %>%                                             ### IMAGE 04
+  ggplot(aes(x=lugar, fill=as.factor(publication_time)))+
+  geom_bar(position="dodge")+
+  theme(legend.position = "bottom",
+        text = element_text(size=8))
+
+#### Variables de Diccionario ####
+
+#Download Model
+# Se descargan modelos para el español y para el portugués
+
+#udpipe_download_model("spanish")    # Descomentar si no se ha descargado
+#udpipe_download_model("portuguese") # Descomentar si no se ha descargado
+model_spanish = udpipe_load_model("spanish-gsd-ud-2.5-191206.udpipe")
+model_portuguese = udpipe_load_model("portuguese-bosque-ud-2.5-191206.udpipe")
+
+# Se separan los tweets de Brasil del resto para manejar idiomas por separado.
+
+cultura_spanish_df = cultura_counted_df %>%
+  filter(lugar!="brazil")
+
+cultura_portuguese_df = cultura_counted_df %>%
+  filter(lugar=="brazil")
+
+# Se calculan las anotaciones para ambos conjuntos
+
+cultura_spanish_df_ann = udpipe_annotate(model_spanish, x=cultura_spanish_df$text,
+                                      doc_id = cultura_spanish_df$status_id) %>% 
+  as_tibble()
+
+cultura_portuguese_df_ann = udpipe_annotate(model_portuguese, x=cultura_portuguese_df$text,
+                                      doc_id = cultura_portuguese_df$status_id) %>% 
+  as_tibble()
+
+
+# Creacion de variables de diccionario (para ambos idiomas)
+
+cultura_spanish_df_dict = cultura_spanish_df_ann %>% 
+  group_by(doc_id) %>% 
+  summarise(n_words=n(),
+            n_unique_words=n_distinct(tolower(lemma)))
+
+cultura_portuguese_df_dict = cultura_portuguese_df_ann %>% 
+  group_by(doc_id) %>% 
+  summarise(n_words=n(),
+            n_unique_words=n_distinct(tolower(lemma)))
+
+
+# Idem pero por POS
+
+cultura_spanish_df_pos = cultura_spanish_df_ann %>% 
+  filter(upos %in% c("ADJ","NOUN","PROPN","PUNCT","VERB","ADV","PRON","DET"),
+         !is.na(upos)) %>% 
+  filter(!tolower(lemma) %in% stopwords(language = "es", source = "nltk")) %>% 
+  group_by(doc_id, upos) %>% 
+  summarise(n_words=n(),
+            n_unique_words=n_distinct(tolower(lemma))) %>% 
+  pivot_wider(names_from = "upos",
+              values_from = c("n_words","n_unique_words"),
+              values_fill = 0)
+
+cultura_portuguese_df_pos = cultura_portuguese_df_ann %>% 
+  filter(upos %in% c("ADJ","NOUN","PROPN","PUNCT","VERB","ADV","PRON","DET"),
+         !is.na(upos)) %>% 
+  filter(!tolower(lemma) %in% stopwords(language = "pt", source = "nltk")) %>% 
+  group_by(doc_id, upos) %>% 
+  summarise(n_words=n(),
+            n_unique_words=n_distinct(tolower(lemma))) %>% 
+  pivot_wider(names_from = "upos",
+              values_from = c("n_words","n_unique_words"),
+              values_fill = 0)
+
+# Anexamos los resultados para ambos lenguajes en ambos casos
+
+cultura_df_dict = bind_rows(cultura_spanish_df_dict,cultura_portuguese_df_dict)
+cultura_df_pos = bind_rows(cultura_spanish_df_pos,cultura_portuguese_df_pos)
+
+# Join data
+
+cultura_dictvars_df = cultura_counted_df %>% 
+  inner_join(cultura_df_dict, by=c("status_id"="doc_id")) %>% 
+  inner_join(cultura_df_pos, by=c("status_id"="doc_id"))
+
+#### Feelings Variables ####
+
+# Categorizar feelings
+# Nuevamente se realiza para los dos idiomas en manejo
+
+cultura_spanish_df_feel = get_nrc_sentiment(cultura_spanish_df$text, language = "spanish")
+
+cultura_portuguese_df_feel = get_nrc_sentiment(cultura_portuguese_df$text, language = "portuguese")
+
+# Se anexan los resultados
+
+cultura_df_feel = bind_rows(cultura_spanish_df_feel,cultura_portuguese_df_feel)
+
+# Se normalizan los resultados
+
+cultura_df_feel = cultura_df_feel %>% 
+  mutate(across(everything(),function(x)(x-min(x))/(max(x)-min(x))))
+
+#Join data
+
+cultura_feelings_df = bind_cols(cultura_dictvars_df, cultura_df_feel)
+
+# Descriptiva
+
+cultura_feelings_df %>%                                            ### IMAGE 05
+  group_by(lugar) %>% 
+  summarise(n_words = mean(n_words),
+            n_unique_words = mean(n_unique_words),
+            n_words_ADJ = mean(n_words_ADJ),
+            n_words_NOUN = mean(n_words_NOUN),
+            n_words_PROPN = mean(n_words_PROPN),
+            n_words_PUNCT = mean(n_words_PUNCT),
+            n_words_VERB = mean(n_words_VERB),
+            n_words_ADV = mean(n_words_ADV),
+            n_words_PRON = mean(n_words_PRON),
+            n_words_DET = mean(n_words_DET),
+            n_unique_words_ADJ = mean(n_unique_words_ADJ),
+            n_unique_words_NOUN = mean(n_unique_words_NOUN),
+            n_unique_words_PROPN = mean(n_unique_words_PROPN),
+            n_unique_words_PUNCT = mean(n_unique_words_PUNCT),
+            n_unique_words_VERB = mean(n_unique_words_VERB),
+            n_unique_words_ADV = mean(n_unique_words_ADV),
+            n_unique_words_PRON = mean(n_unique_words_PRON),
+            n_unique_words_DET = mean(n_unique_words_DET)) %>% 
+  pivot_longer(-c(lugar)) %>% 
+  mutate(tipo=case_when(name %in% c("n_words","n_unique_words")~"general",
+                        T~"upos")) %>% 
+  ggplot(aes(x=lugar, y=value, fill=name))+
+  geom_col(position = "dodge")+
+  facet_wrap(vars(tipo), scales = "free")+
+  theme(legend.position = "bottom",
+        text = element_text(size = 8))
+
+# Descriptiva
+
+cultura_feelings_df %>%                                             ### IMAGE 06
+  group_by(lugar) %>% 
+  summarise(anger = mean(anger),
+            anticipation = mean(anticipation),
+            disgust = mean(disgust),
+            fear = mean(fear),
+            joy = mean(joy),
+            sadness = mean(sadness),
+            surprise = mean(surprise),
+            trust = mean(trust),
+            negative = mean(negative),
+            positive = mean(positive)) %>% 
+  pivot_longer(-c(lugar)) %>% 
+  ggplot(aes(x=lugar, y = value, fill = name))+
+  geom_col(position = "dodge")+
+  theme(legend.position = "bottom",
+        text = element_text(size=8))
+
+#cols = colnames(cultura_feelings_df,do.NULL = TRUE, prefix = "col")
+
+#### Target Variable Creation ####
+# Asumimos que tenemos promotores de la cultura digital actualmente en México y
+# Colombia.
+
+cultural_model = cultura_feelings_df %>%
+  mutate(target_promoter = case_when( lugar == "mexico" | lugar == "colombia" ~ 1,
+                                      T ~ 0))
+
+
+# Checking target variable creation
+
+cultural_model %>%                                                  ### IMAGE 07
+  count(lugar, target_promoter) %>%
+  ggplot(aes(x=target_promoter, y=n, fill=as.factor(lugar)))+
+  geom_col()+
+  theme(legend.position = "bottom",
+        text=element_text(8))
+
+
+#### Saving new RDS ####
+
+saveRDS(cultural_model, "cultura_model.RDS")
+
+
+#######################################################################
+#######################################################################
+#######################################################################
+
+#### Machine Learning Section ####
+
+# Carga de datos
+
+cultura_model_df = readRDS("cultura_model.RDS")
+
+# Conversion de variable dependiente a factor o en formato de carácter
+
+cultura_task_df = cultura_model_df %>% 
+  mutate(target_promoter = factor(target_promoter,
+                               levels = c(0,1),
+                               labels = c("no_apropiado", "apropiado")),
+         publication_time = strtoi(publication_time, base = 10)) %>% 
+  select(-user_id, -screen_name, -status_id, -text, -source, -reply_to_screen_name,
+         -hashtags, -mentions_screen_name, -retweet_screen_name, -description,
+         -text_cleaned, -created_at, -account_created_at, -reply_to_status_id,
+         -is_retweet, -is_quote, -quote_count, -reply_count, -lugar, -tweet_type)
+
+# Creacion de la tares
+
+task_cultura = TaskClassif$new(id = "cultura",
+                                 backend = cultura_task_df,
+                                 target = "target_promoter")
+
+autoplot(task_cultura)                                               ### IMAGE 08
+
+
+# Definicion de train set
+
+train_set = sample(task_cultura$nrow, 0.7*task_cultura$nrow)
+test_set = setdiff(seq_len(task_cultura$nrow), train_set)
+
+
+# Inicializar Learner
+
+cultura_learner = lrn("classif.rpart")
+cultura_learner$predict_type = "prob"
+
+# Training
+
+cultura_learner$train(task_cultura, row_ids = train_set)
+
+# Results
+
+rpart.plot(cultura_learner$model)                                   ### IMAGE 09
+
+# Prediction
+
+prediction_dt = cultura_learner$predict(task_cultura,
+                                        test_set)
+
+# Observamos los resultados de la predicción
+
+prediction_dt                                                      ### IMAGE 10
+#prediction_dt$data$prob[,1] %>% n_distinct()
+autoplot(prediction_dt)                                            ### IMAGE 11
+
+# COnfusion Matrix
+
+prediction_dt$confusion                                            ### IMAGE 12
+
+
+#### Evaluación del Learner ####
+
+# Medidas de desempeño
+
+cultura_measure = list(msr("classif.acc", id="accuracy"),
+                       msr("classif.auc", id="auc"),
+                       msr("classif.precision", id="precision"),
+                       msr("classif.recall", id="recall"),
+                       msr("classif.sensitivity", id="sensitivity"),
+                       msr("classif.specificity", id="specificity"),
+                       msr("classif.tn", id="true negative"),
+                       msr("classif.tp", id="true positive"),
+                       msr("classif.fn", id="false negative"),
+                       msr("classif.fp", id="false positive"))
+
+sapply(cultura_measure, function(x) prediction_dt$score(x))       ### IMAGE 13
+
+
+# CUrva ROC
+
+autoplot(prediction_dt, type="roc")                               ### IMAGE 14
+
+
+
+#### Optimizacion/Afinacion de Hiperparametros ####
+
+# Iniciar learner
+
+optimizing_learner = lrn("classif.rpart")
+
+# Espacio de busqueda
+
+search_space = ps(cp = p_dbl(lower = 0.001, upper = 0.1),
+                  minsplit = p_int(lower = 20, upper = 100))
+
+# Metodo de Evaluacion
+
+resamp_method = rsmp("cv", folds=10)
+measure_method = msr("classif.acc")
+ending_method = trm("stagnation")
+
+# iniciar optimizacion
+
+instance = TuningInstanceSingleCrit$new(task = task_cultura,
+                                        learner = optimizing_learner,
+                                        resampling = resamp_method,
+                                        measure = measure_method,
+                                        search_space = search_space,
+                                        terminator = ending_method)
+
+# Metodo de busqueda
+
+tuner = tnr("random_search")
+
+#Optimizacion
+
+tuner$optimize(instance)                                            ### IMAGE 15
+
+# Inicializar learner
+
+final_learner = lrn("classif.rpart",
+                    cp = instance$result$cp,
+                    minsplit = instance$result$minsplit)
+
+final_learner$predict_type = "prob"
+
+# Training
+
+final_learner$train(task_cultura, row_ids = train_set)
+
+# Result
+
+rpart.plot(final_learner$model)                                    ### IMAGE 16
+
+# Prediccion final
+
+prediction_fin = final_learner$predict(task_cultura,
+                                       row_ids = test_set)
+
+
+### Evaluación Final ###
+
+final_measure = list(msr("classif.acc", id="accuracy"),
+                     msr("classif.auc", id="auc"),
+                     msr("classif.precision", id="precision"),
+                     msr("classif.recall", id="recall"),
+                     msr("classif.sensitivity", id="sensitivity"),
+                     msr("classif.specificity", id="specificity"),
+                     msr("classif.tn", id="true negative"),
+                     msr("classif.tp", id="true positive"),
+                     msr("classif.fn", id="false negative"),
+                     msr("classif.fp", id="false positive"))
+
+sapply(final_measure, function(x) prediction_fin$score(x))          ### IMAGE 17
+
+autoplot(prediction_fin, type = "roc")                              ### IMAGE 18

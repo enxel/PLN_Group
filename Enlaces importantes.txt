@@ -1,0 +1,11 @@
+FORMATO PARA EL BLOG:
+
+https://www.sngular.com/es/data-science-crisp-dm-metodologia/
+
+
+OTROS?
+
+https://www.titonet.com/estrategia-digital/que-es-la-cultura-digital.html
+
+https://docs.ropensci.org/rtweet/reference/search_tweets.html
+
